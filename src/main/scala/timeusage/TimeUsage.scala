@@ -96,7 +96,9 @@ object TimeUsage {
     val work = columnNames.filter(c => c.matches("^(t05|t1805).*$")).map(new Column(_))
 
     val leisure = columnNames
-      .filter(c => c.matches("^(t02|t04|t06|t07|t08|t09|t1[0234568]).*$") && !primary.contains(c) && !work.contains(c))
+      .filter(!primary.contains(_))
+      .filter(!work.contains(_))
+      .filter(c => c.matches("^(t02|t04|t06|t07|t08|t09|t10|t12|t13|t14|t15|t16|t18).*$"))
       .map(new Column(_))
 
     (primary, work, leisure)
@@ -137,13 +139,17 @@ object TimeUsage {
                         otherColumns: List[Column],
                         df: DataFrame
                       ): DataFrame = {
-    val workingStatusProjection: Column = ???
-    val sexProjection: Column = ???
-    val ageProjection: Column = ???
 
-    val primaryNeedsProjection: Column = ???
-    val workProjection: Column = ???
-    val otherProjection: Column = ???
+    val workingStatusProjection: Column = when(df("telfs") >= 1 && df("telfs") < 3, "working").otherwise("not working").as("working")
+    val sexProjection: Column = when(df("tesex") === 1, "male").otherwise("female").as("sex")
+    val ageProjection: Column = when(df("teage") >= 15 && df("teage") <= 22, "young").otherwise(
+      when(df("teage") >= 23 && df("teage") <= 55, "active")
+        .otherwise("elder")
+    ).as("age")
+
+    val primaryNeedsProjection: Column = (primaryNeedsColumns.reduce(_ + _) / 60) as "primaryNeeds"
+    val workProjection: Column = (workColumns.reduce(_ + _) / 60) as "work"
+    val otherProjection: Column = (otherColumns.reduce(_ + _) / 60) as "other"
     df
       .select(workingStatusProjection, sexProjection, ageProjection, primaryNeedsProjection, workProjection, otherProjection)
       .where($"telfs" <= 4) // Discard people who are not in labor force
@@ -167,7 +173,7 @@ object TimeUsage {
     *               Finally, the resulting DataFrame should be sorted by working status, sex and age.
     */
   def timeUsageGrouped(summed: DataFrame): DataFrame = {
-    ???
+    summed.groupBy("working", "sex", "age").avg("primaryNeeds", "work", "other").orderBy("working", "sex", "age")
   }
 
   /**
@@ -184,7 +190,11 @@ object TimeUsage {
     * @param viewName Name of the SQL view to use
     */
   def timeUsageGroupedSqlQuery(viewName: String): String =
-  ???
+  s"""
+      SELECT working, sex, age, avg(primaryNeeds), avg(work), avg(other)
+      FROM $viewName
+      GROUP BY working, sex, age
+      ORDER BY working, sex, age """
 
   /**
     * @return A `Dataset[TimeUsageRow]` from the “untyped” `DataFrame`
