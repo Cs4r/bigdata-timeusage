@@ -90,18 +90,17 @@ object TimeUsage {
     */
   def classifiedColumns(columnNames: List[String]): (List[Column], List[Column], List[Column]) = {
 
+    val primaryPrefixes = List("t01", "t03", "t11", "t1801", "t1803")
+    val workingPrefixes = List("t05", "t1805")
+    val otherPrefixes = List("t02", "t04", "t06", "t07", "t08", "t09", "t10", "t12", "t13", "t14", "t15", "t16", "t18")
 
-    val primary = columnNames.filter(c => c.matches("^(t01|t03|t11|t1801|t1803).*$")).map(new Column(_))
-
-    val work = columnNames.filter(c => c.matches("^(t05|t1805).*$")).map(new Column(_))
-
-    val leisure = columnNames
-      .filter(!primary.contains(_))
-      .filter(!work.contains(_))
-      .filter(c => c.matches("^(t02|t04|t06|t07|t08|t09|t10|t12|t13|t14|t15|t16|t18).*$"))
-      .map(new Column(_))
-
-    (primary, work, leisure)
+    columnNames.foldRight[(List[Column], List[Column], List[Column])]((Nil, Nil, Nil)) {
+      (current, acc) =>
+        if (primaryPrefixes.exists(current.startsWith)) acc.copy(_1 = new Column(current) :: acc._1)
+        else if (workingPrefixes.exists(current.startsWith)) acc.copy(_2 = new Column(current) :: acc._2)
+        else if (otherPrefixes.exists(current.startsWith)) acc.copy(_3 = new Column(current) :: acc._3)
+        else acc
+    }
   }
 
   /** @return a projection of the initial DataFrame such that all columns containing hours spent on primary needs
@@ -173,7 +172,9 @@ object TimeUsage {
     *               Finally, the resulting DataFrame should be sorted by working status, sex and age.
     */
   def timeUsageGrouped(summed: DataFrame): DataFrame = {
-    summed.groupBy("working", "sex", "age").avg("primaryNeeds", "work", "other").orderBy("working", "sex", "age")
+    summed.groupBy("working", "sex", "age")
+      .agg(round(avg("primaryNeeds"), 1), round(avg("work"), 1), round(avg("other"), 1))
+      .orderBy("working", "sex", "age")
   }
 
   /**
@@ -191,10 +192,10 @@ object TimeUsage {
     */
   def timeUsageGroupedSqlQuery(viewName: String): String =
   s"""
-      SELECT working, sex, age, avg(primaryNeeds), avg(work), avg(other)
-      FROM $viewName
-      GROUP BY working, sex, age
-      ORDER BY working, sex, age """
+    SELECT working, sex, age, ROUND(AVG(primaryNeeds), 1), ROUND(AVG(work), 1), ROUND(AVG(other), 1)
+    FROM $viewName
+    GROUP BY working, sex, age
+    ORDER BY working, sex, age """
 
   /**
     * @return A `Dataset[TimeUsageRow]` from the “untyped” `DataFrame`
@@ -204,7 +205,12 @@ object TimeUsage {
     *                           cast them at the same time.
     */
   def timeUsageSummaryTyped(timeUsageSummaryDf: DataFrame): Dataset[TimeUsageRow] =
-  ???
+  timeUsageSummaryDf.map(row => TimeUsageRow(row.getAs("working"),
+    row.getAs("sex"),
+    row.getAs("age"),
+    row.getAs("primaryNeeds"),
+    row.getAs("work"),
+    row.getAs("other")))
 
   /**
     * @return Same as `timeUsageGrouped`, but using the typed API when possible
@@ -219,8 +225,15 @@ object TimeUsage {
     */
   def timeUsageGroupedTyped(summed: Dataset[TimeUsageRow]): Dataset[TimeUsageRow] = {
     import org.apache.spark.sql.expressions.scalalang.typed
-    ???
+    summed.groupByKey(timeUsageRow => (timeUsageRow.working, timeUsageRow.sex, timeUsageRow.age))
+      .agg(typed.avg[TimeUsageRow](_.primaryNeeds), typed.avg[TimeUsageRow](_.work), typed.avg[TimeUsageRow](_.other))
+      .map(line => (line._1._1, line._1._2, line._1._3, line._2, line._3, line._4))
+      .map(result => TimeUsageRow(result._1, result._2, result._3, oneDecimal(result._4), oneDecimal(result._5), oneDecimal(result._6)))
+      .orderBy("working", "sex", "age")
   }
+
+
+  private def oneDecimal(d: Double): Double = Math.round(d * 10) / 10d
 }
 
 /**
